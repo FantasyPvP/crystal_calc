@@ -1,6 +1,6 @@
 use std::io;
 use std::fmt;
-
+use std::ops::Neg;
 
 
 
@@ -23,7 +23,7 @@ impl Interpreter {
         return Ok(Self {})
     }
 
-    fn visit(&mut self, node: Node) {
+    fn visit(&mut self, node: Node) -> Result<Value, Error> {
         match node {
             Node::BinaryOperation(_) => return self.visit_binary_operation(node),
             Node::UnaryOperation(_) => return self.visit_unary_operation(node),
@@ -32,20 +32,143 @@ impl Interpreter {
         }
     }
 
-    fn visit_number(&mut self, node: Node) {
-        println!("found number")
-    }
-    fn visit_operator(&mut self, node: Node) {
-        println!("found number")
-    }
-    fn visit_binary_operation(&mut self, node: Node) {
+
+    fn visit_number(&mut self, node: Node) -> Result<Value, Error> {
         println!("found number");
-        self.visit(get!(node, "left"))
+
+        if let Node::Number(x) = node {
+            Ok(Value::Number(x))
+        } else {
+            panic!("value accessed was not an number")
+        }
     }
-    fn visit_unary_operation(&mut self, node: Node) {
+
+
+    fn visit_operator(&mut self, node: Node) -> Result<Value, Error> {
         println!("found number");
-        self.visit(get!(node, "left"))
+
+        if let Node::Operator(x) = node {
+            Ok(Value::Operator(x))
+        } else {
+            panic!("value accessed was not an number")
+        }    
+
     }
+
+
+    fn visit_binary_operation(&mut self, node: Node) -> Result<Value, Error>  {
+        println!("found number");
+
+        println!("left {:?}", self.visit(self.get_node(node.clone(), "left").expect("returned none").to_owned())?);
+        let left = match self.visit(self.get_node(node.clone(), "left").expect("returned none").to_owned())? {
+            Value::Number(x) => x,
+            _ => panic!("value is not a number")
+        };
+
+        println!("right {:?}", self.visit(self.get_node(node.clone(), "right").expect("returned none").to_owned())?);
+        let right = match self.visit(self.get_node(node.clone(), "right").expect("returned none").to_owned())? {
+            Value::Number(x) => x,
+            _ => panic!("value is not a number")
+        };
+
+        println!("operator {:?}", self.visit(self.get_node(node.clone(), "operator").expect("returned none").to_owned())?);
+        let operator = match self.visit(self.get_node(node.clone(), "operator").expect("returned none").to_owned())? {
+            Value::Operator(x) => x,
+            _ => panic!("value is not a binary operator")
+        };
+
+        match operator {
+            Operator::Add => {
+                return Ok(Value::Number(left + right))
+            },
+            Operator::Sub => {
+                return Ok(Value::Number(left - right))
+            },
+            Operator::Div => {
+                if right != 0.0 {
+                    return Ok(Value::Number(left / right))
+                } else {
+                    return Err(Error::LogicalError(String::from("division by 0")))
+                }
+            },
+            Operator::Mod => {
+                return Ok(Value::Number(left % right))
+            },
+            Operator::Qot => {
+                if right != 0.0 {
+                    return Ok(Value::Number(
+                        f64::trunc(left / right)
+                    ))
+                } else {
+                    return Err(Error::LogicalError(String::from("division by 0")))
+                }
+            },
+            Operator::Mul => {
+                return Ok(Value::Number(left * right))
+            },
+            Operator::Exp => {
+                return Ok(Value::Number(left.powf(right)))
+            },
+            _ => panic!("value is not an operator")
+        }
+
+    }
+
+
+    fn visit_unary_operation(&mut self, node: Node) -> Result<Value, Error>  {
+        println!("found number");
+
+        let other: f64 = match self.visit(self.get_node(node.clone(), "other").expect("returned none").to_owned())? {
+            Value::Number(x) => x,
+            _ => panic!("value is not a number")
+        };
+
+        if let Node::UnaryOperation(x) = node {
+            match x.operator {
+                Node::Operator(Operator::Sub) => {
+                    return Ok(Value::Number(other.neg()))
+                },
+                _ => panic!("value is not an operator")
+            }
+        } else {
+            panic!("node is not a binary operation")
+        }
+    }
+
+    fn get_node(&self, node: Node, position: &str) -> Option<Node> {
+        match position {
+            "left" => {
+                if let Node::BinaryOperation(x) = node {
+                    Some(x.left)
+                } else {
+                    None
+                }
+            }
+            "right" => {
+                if let Node::BinaryOperation(x) = node {
+                    Some(x.right)
+                } else {
+                    None
+                }
+            }
+            "other" => {
+                if let Node::UnaryOperation(x) = node {
+                    Some(x.other)
+                } else {
+                    None
+                }
+            }
+            "operator" => {
+                if let Node::BinaryOperation(x) = node {
+                    Some(x.operator)
+                } else {
+                    None
+                }
+            },
+            _ => panic!("invalid param for get_Node")
+        }
+    }
+
 }
 
 
@@ -84,18 +207,10 @@ impl Parser {
         }
     }
 
-
-
-    fn factor(&mut self) -> Result<Node, Error> {
+    fn atom(&mut self) -> Result<Node, Error> {
         let token = self.current.clone();
 
-        match token { 
-            Token::Operator(Operator::Add) | Token::Operator(Operator::Sub) => {
-                self.advance()?;
-                let operator = mknode!(token).expect("mknode returned none");
-                let other = self.factor()?;
-                return Ok(Node::UnaryOperation(Box::new(UnaryOperation { operator, other})))
-            },
+        match token {
             Token::Number(x) => {
                 self.advance()?;
                 return Ok(Node::Number(x))
@@ -113,6 +228,37 @@ impl Parser {
                 }
             },
             _ => return Err(Error::InvalidSyntax(0))
+        }
+    }
+
+    fn power(&mut self) -> Result<Node, Error> {
+        let mut left = self.atom()?;
+
+        while let Token::Operator(Operator::Exp) = self.current {
+            let current = self.current;
+            self.advance()?;
+            let operator = mknode!(current).expect("mknode function returned None");
+            let right = self.factor()?;
+
+            left = Node::BinaryOperation(Box::new(BinaryOperation { left: left.clone(), operator, right }));
+        }
+        Ok(left)
+    }
+
+
+
+    fn factor(&mut self) -> Result<Node, Error> {
+        let token = self.current.clone();
+
+        match token { 
+            Token::Operator(Operator::Add) | Token::Operator(Operator::Sub) => {
+                self.advance()?;
+                let operator = mknode!(token).expect("mknode returned none");
+                let other = self.factor()?;
+                return Ok(Node::UnaryOperation(Box::new(UnaryOperation { operator, other})))
+            },
+
+            _ => return Ok(self.power()?)
         }
     }
 
@@ -167,39 +313,7 @@ macro_rules! mknode {
     };
 }
 
-#[macro_export]
-macro_rules! get {
-    ($node:expr, $other:expr) => {
-        match $other {
-            "left" => {
-                if let Node::BinaryOperation(x) = $node {
-                    Some(x.left)
-                } else {
-                    NOne
-                }
-            },
-            "right" => {
-                if let Node::BinaryOperation(x) = $node {
-                    Some(x.right)
-                } else {
-                    None
-                }
-            },
-            "other" => {
-                if let Node::UnaryOperation(x) = $node {
-                    Some(x.other)
-                } else {
-                    None
-                }
-            }
-            _ => 
-            
-        }
-    }
-    ($node:expr) => {
 
-    }
-}
 
 
 
@@ -219,10 +333,11 @@ fn main() {
     let ast = parser.parse().expect("parsing failed!");
 
     let mut interpreter = Interpreter::new().expect("failed to initialise interpreter");
-    interpreter.visit(ast.clone());
+    let result = interpreter.visit(ast.clone()).unwrap();
 
     println!("AST : {:#?}", ast);
 
+    println!("output : {:?}", result)
 }
 
 
@@ -279,10 +394,11 @@ fn tokenise(equation: &str) -> Result<Vec<Token>, Error> {
 
 
 
-
-
-
-
+#[derive(Debug)]
+enum Value {
+    Number(f64),
+    Operator(Operator)
+}
 
 
 
@@ -309,7 +425,8 @@ enum Operator {
 #[derive(Debug)]
 enum Error {
     InvalidSyntax(usize),
-    InvalidCharacter(usize)
+    InvalidCharacter(usize),
+    LogicalError(String)
 }
 
 
